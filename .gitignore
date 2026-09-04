@@ -1,0 +1,12 @@
+/bin/
+/ploi-tui
+/dist/
+coverage.out
+coverage.html
+*.test
+*.out
+!go.sum
+
+.DS_Store
+.idea/
+.vscode/
