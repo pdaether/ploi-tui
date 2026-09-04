@@ -60,14 +60,14 @@ func TestAppOpensServerAndLoadsMonitoring(t *testing.T) {
 
 	app := NewApp(api.New("token", api.WithBaseURL(srv.URL)))
 	model, cmd := app.Update(app.Init()())
-	model, cmd = model.(App).Update(cmd())
+	model, _ = model.(App).Update(cmd())
 	model, cmd = model.(App).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	appModel := model.(App)
 	if cmd == nil {
 		t.Fatal("enter should load server details")
 	}
 
-	model, cmd = appModel.Update(cmd())
+	model, _ = appModel.Update(cmd())
 	appModel = model.(App)
 	model, _ = appModel.Update(databasesLoadedMsg{requestID: appModel.databaseRequestID, serverID: 7, databases: []api.Database{{Type: "postgresql"}}})
 	appModel = model.(App)
@@ -234,7 +234,7 @@ func TestAppLoadsSitesAndOpensSiteDetail(t *testing.T) {
 	if cmd == nil || !model.(App).detail.SitesLoading {
 		t.Fatal("sites tab should start a lazy sites request")
 	}
-	model, cmd = model.(App).Update(cmd())
+	model, _ = model.(App).Update(cmd())
 	if !sitesRequested || !model.(App).detail.SitesLoaded {
 		t.Fatal("sites response was not accepted")
 	}

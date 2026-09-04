@@ -156,10 +156,10 @@ func (m Model) monitoringView(width, height int) string {
 	disk := components.Values(samples, func(sample api.MonitoringSample) float64 { return float64(sample.Disk) })
 	last := samples[len(samples)-1]
 	lines = append(lines,
-		metricChart("CPU %", cpu, components.FormatPercent(last.CPU), 0, 100, width, height),
-		metricChart("MEMORY %", ram, components.FormatPercent(last.RAM), 0, 100, width, height),
-		metricChart("LOAD AVG", load, components.FormatLoad(last.LoadAverage), 0, maxSeries(load), width, height),
-		metricChart("DISK %", disk, components.FormatPercent(last.Disk), 0, 100, width, height),
+		metricChart("CPU %", cpu, components.FormatPercent(last.CPU), 100, width, height),
+		metricChart("MEMORY %", ram, components.FormatPercent(last.RAM), 100, width, height),
+		metricChart("LOAD AVG", load, components.FormatLoad(last.LoadAverage), maxSeries(load), width, height),
+		metricChart("DISK %", disk, components.FormatPercent(last.Disk), 100, width, height),
 	)
 	return strings.Join(lines, "\n")
 }
@@ -290,24 +290,24 @@ func metricSummary(label string, values []float64, current float64, width int) s
 	return fmt.Sprintf("  %-5s %s  %s", label, components.Sparkline(values, sparkWidth, 0, 100), theme.Muted.Render(fmt.Sprintf("%.1f%%", current)))
 }
 
-func metricChart(label string, values []float64, current string, minValue, maxValue float64, width, height int) string {
+func metricChart(label string, values []float64, current string, maxValue float64, width, height int) string {
 	if height >= 18 && width >= 48 {
 		chartWidth := max(12, width-9)
-		chart := components.BarChart(values, chartWidth, 3, minValue, maxValue)
-		middle := minValue + (maxValue-minValue)/2
+		chart := components.BarChart(values, chartWidth, 3, 0, maxValue)
+		middle := maxValue / 2
 		return strings.Join([]string{
 			fmt.Sprintf("  %-9s now %s", label, current),
 			fmt.Sprintf("  %3s │ %s", chartScale(maxValue), chart[0]),
 			fmt.Sprintf("  %3s │ %s", chartScale(middle), chart[1]),
-			fmt.Sprintf("  %3s │ %s", chartScale(minValue), chart[2]),
+			fmt.Sprintf("  %3s │ %s", chartScale(0), chart[2]),
 		}, "\n")
 	}
 	if width < 48 {
 		sparkWidth := max(4, width-14)
-		return fmt.Sprintf("  %-9s %s  now %s", label, components.Sparkline(values, sparkWidth, minValue, maxValue), current)
+		return fmt.Sprintf("  %-9s %s  now %s", label, components.Sparkline(values, sparkWidth, 0, maxValue), current)
 	}
 	sparkWidth := max(12, width-28)
-	spark := components.Sparkline(values, sparkWidth, minValue, maxValue)
+	spark := components.Sparkline(values, sparkWidth, 0, maxValue)
 	return fmt.Sprintf("  %-9s %s  now %s", label, spark, current)
 }
 

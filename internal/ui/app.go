@@ -107,9 +107,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.serverList.SetWidth(max(0, msg.Width-2))
 
 	case tea.KeyMsg:
-		if cmd, handled := a.handleKey(msg); handled {
-			return a, cmd
-		}
+		return a, a.handleKey(msg)
 
 	case restartFinishedMsg:
 		if msg.err != nil {
@@ -173,41 +171,41 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-func (a *App) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	if a.screen == serverListScreen && a.serverList.Filtering() && (key == "up" || key == "down") {
 		a.serverList.UpdateFilter(tea.KeyMsg{Type: tea.KeyEnter})
-		return a.handleListKey(key), true
+		return a.handleListKey(key)
 	}
 	if a.screen == serverListScreen && a.serverList.Filtering() && key != "ctrl+c" {
 		a.serverList.UpdateFilter(msg)
-		return nil, true
+		return nil
 	}
 	switch key {
 	case "ctrl+c", "q":
-		return tea.Quit, true
+		return tea.Quit
 	case "?":
 		a.help = !a.help
-		return nil, true
+		return nil
 	}
 
 	if a.help {
 		if key == "esc" {
 			a.help = false
 		}
-		return nil, true
+		return nil
 	}
 	if a.restartConfirm {
 		switch key {
 		case "y":
 			a.restartConfirm = false
 			if a.detail.Server != nil {
-				return a.restartServer(a.detail.Server.ID), true
+				return a.restartServer(a.detail.Server.ID)
 			}
 		case "n", "esc":
 			a.restartConfirm = false
 		}
-		return nil, true
+		return nil
 	}
 	if a.sshSelecting {
 		switch key {
@@ -225,45 +223,46 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			if !a.sshLoading && a.sshErr == nil && a.sshCursor < len(a.sshUsers) && a.detail.Server != nil {
 				user := a.sshUsers[a.sshCursor]
 				a.sshSelecting = false
-				return a.ssh(a.detail.Server, user.Name), true
+				return a.ssh(a.detail.Server, user.Name)
 			}
 		}
-		return nil, true
+		return nil
 	}
 
 	switch key {
 	case "esc":
-		if a.screen == siteDetailScreen {
+		switch a.screen {
+		case siteDetailScreen:
 			a.screen = serverDetailScreen
 			a.siteDetail = sitedetail.Model{}
-		} else if a.screen == serverDetailScreen {
+		case serverDetailScreen:
 			a.screen = serverListScreen
 			a.detail = serverdetail.Model{}
 		}
-		return nil, true
+		return nil
 	case "ctrl+r":
 		if a.screen == serverDetailScreen && a.detail.Server != nil {
 			a.restartConfirm = true
 		}
-		return nil, true
+		return nil
 	case "s":
 		if a.screen == serverDetailScreen && a.detail.Server != nil {
-			return a.beginLoadSystemUsers(), true
+			return a.beginLoadSystemUsers()
 		}
 		if a.screen == siteDetailScreen {
-			return a.handleSiteDetailKey(key), true
+			return a.handleSiteDetailKey(key)
 		}
-		return nil, true
+		return nil
 	case "c":
 		if a.screen == serverDetailScreen && a.detail.Server != nil {
-			return a.copyIP(*a.detail.Server), true
+			return a.copyIP(*a.detail.Server)
 		}
 		if a.screen == serverListScreen {
 			if server, ok := a.serverList.Selected(); ok {
-				return a.copyIP(server), true
+				return a.copyIP(server)
 			}
 		}
-		return nil, true
+		return nil
 	case "r":
 		a.toast = a.newToast("Refreshing view...")
 		var cmd tea.Cmd
@@ -274,7 +273,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		} else {
 			cmd = a.refreshServers()
 		}
-		return tea.Batch(cmd, clearToast(a.toast.id)), true
+		return tea.Batch(cmd, clearToast(a.toast.id))
 	case "R":
 		a.toast = a.newToast("Refreshing all data...")
 		a.serversLoaded = false
@@ -288,16 +287,16 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			cmds = append(cmds, a.beginLoadSite(a.siteDetail.Server.ID, a.siteDetail.Site.ID))
 		}
 		cmds = append(cmds, clearToast(a.toast.id))
-		return tea.Batch(cmds...), true
+		return tea.Batch(cmds...)
 	}
 
 	if a.screen == serverListScreen {
-		return a.handleListKey(key), true
+		return a.handleListKey(key)
 	}
 	if a.screen == siteDetailScreen {
-		return a.handleSiteDetailKey(key), true
+		return a.handleSiteDetailKey(key)
 	}
-	return a.handleDetailKey(key), true
+	return a.handleDetailKey(key)
 }
 
 func (a *App) handleListKey(key string) tea.Cmd {

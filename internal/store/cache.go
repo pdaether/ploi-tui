@@ -66,7 +66,7 @@ func (c *Cache) SaveServers(servers []api.Server) error {
 		return fmt.Errorf("create server cache: %w", err)
 	}
 	tempPath := temp.Name()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("secure server cache: %w", err)
