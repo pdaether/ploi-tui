@@ -133,8 +133,11 @@ XDG_CONFIG_HOME="$T/config" XDG_CACHE_HOME="$T/cache" \
 
 Tips:
 
-- Every request is logged to the mock's terminal — useful for seeing exactly
-  which endpoints a screen or action hits (paths only, no headers).
+- Every request is logged (paths only, no headers) — useful for seeing exactly
+  which endpoints a screen or action hits. When run manually, the mock logs to
+  its own terminal; `mock/demo.sh` redirects the log to a temp file (path is
+  printed before the TUI starts) so the entries never corrupt the TUI's
+  screen.
 - All fixtures live at the top of `mock/server.js`. Each server is one
   `addServer({...})` call; edit or add entries to exercise different UI
   states: statuses (`active`, `building`, `rebooting`, `refreshing`,

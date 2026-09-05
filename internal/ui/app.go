@@ -49,6 +49,7 @@ type App struct {
 	sshErr         error
 	toast          *toast
 	sshError       string
+	sshErrorID     int
 	nextID         int
 
 	screen                screen
@@ -136,14 +137,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				detail = msg.err.Error()
 			}
 			a.sshError = components.Truncate(detail, 600)
+			a.nextID++
+			a.sshErrorID = a.nextID
 			a.toast = a.newToast("SSH failed; details shown below")
-			return a, clearToast(a.toast.id)
+			return a, tea.Batch(clearToast(a.toast.id), clearSSHErrorAfter(a.sshErrorID, 5*time.Second), tea.ClearScreen)
 		}
 		a.sshError = ""
+		a.sshErrorID = 0
+		// The exec left its output on the terminal and bubbletea does not
+		// erase it after resuming, so force a full repaint.
+		return a, tea.ClearScreen
 
 	case toastClearedMsg:
 		if a.toast != nil && a.toast.id == msg.id {
 			a.toast = nil
+		}
+
+	case sshErrorClearedMsg:
+		if a.sshErrorID == msg.id {
+			a.sshError = ""
+			a.sshErrorID = 0
 		}
 
 	case ipCopiedMsg:

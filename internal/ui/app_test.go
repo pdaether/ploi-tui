@@ -429,6 +429,42 @@ func TestAppShowsSSHErrorDetails(t *testing.T) {
 	}
 }
 
+func TestAppAutoHidesSSHErrorAfterTimeout(t *testing.T) {
+	app := NewApp(api.New("token"))
+	server := api.Server{ID: 7, Name: "web-1"}
+	app.screen = serverDetailScreen
+	app.detail = serverdetail.Model{Server: &server}
+	model, cmd := app.Update(sshFinishedMsg{err: fmt.Errorf("exit status 255"), output: "ssh: connect to host 139.59.201.10 port 22: Connection refused"})
+	appModel := model.(App)
+	if cmd == nil || appModel.sshError == "" {
+		t.Fatal("SSH failure should show the error banner and schedule its auto-hide")
+	}
+	model, _ = appModel.Update(sshErrorClearedMsg{id: appModel.sshErrorID + 1})
+	if !strings.Contains(model.(App).View(), "SSH error") {
+		t.Fatal("a mismatched clear id must not hide the SSH error banner")
+	}
+	model, _ = model.(App).Update(sshErrorClearedMsg{id: appModel.sshErrorID})
+	if strings.Contains(model.(App).View(), "SSH error") {
+		t.Fatalf("matching clear id should hide the SSH error banner: %s", model.(App).View())
+	}
+}
+
+func TestAppRepaintsAfterSSHFinishes(t *testing.T) {
+	newDetailApp := func() App {
+		app := NewApp(api.New("token"))
+		server := api.Server{ID: 7, Name: "web-1"}
+		app.screen = serverDetailScreen
+		app.detail = serverdetail.Model{Server: &server}
+		return app
+	}
+	if _, cmd := newDetailApp().Update(sshFinishedMsg{err: fmt.Errorf("exit status 255")}); cmd == nil {
+		t.Fatal("a failed SSH session should schedule a repaint")
+	}
+	if _, cmd := newDetailApp().Update(sshFinishedMsg{}); cmd == nil {
+		t.Fatal("a successful SSH session should schedule a repaint")
+	}
+}
+
 func TestAppLoadsPloiSystemUsersForSSH(t *testing.T) {
 	app := NewApp(api.New("token"))
 	server := api.Server{ID: 7, Name: "web-1", IPAddress: "139.59.201.10"}

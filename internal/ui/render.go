@@ -14,6 +14,8 @@ import (
 
 type toastClearedMsg struct{ id int }
 
+type sshErrorClearedMsg struct{ id int }
+
 func (a App) View() string {
 	if a.width <= 0 || a.height <= 0 {
 		return ""
@@ -254,6 +256,10 @@ func clearToast(id int) tea.Cmd {
 
 func clearToastAfter(id int, duration time.Duration) tea.Cmd {
 	return tea.Tick(duration, func(time.Time) tea.Msg { return toastClearedMsg{id: id} })
+}
+
+func clearSSHErrorAfter(id int, duration time.Duration) tea.Cmd {
+	return tea.Tick(duration, func(time.Time) tea.Msg { return sshErrorClearedMsg{id: id} })
 }
 
 func joinColumns(left, right []string, width int) string {

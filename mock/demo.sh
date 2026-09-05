@@ -2,11 +2,14 @@
 # Launch ploi-tui against the local mock API, fully isolated — for promo
 # screenshots/screencasts and offline development.
 #
-#   - starts mock/server.js on 127.0.0.1:8787 in the background
+#   - starts mock/server.js on 127.0.0.1:8787 in the background; its request
+#     log goes to a temp file, never to this terminal (it would corrupt the
+#     TUI's screen)
 #   - builds bin/ploi-tui if missing
 #   - runs the TUI with throwaway XDG config/cache dirs and a dummy token,
 #     so your real API token, config, and cache are never touched
-#   - stops the mock when the TUI exits
+#   - stops the TUI and the mock, and removes all temp files, when the TUI
+#     exits or this script is interrupted (INT/TERM)
 #
 # Suggested terminal size for captures: >=74 columns for the wide layout,
 # e.g. 130x38. Press ? in-app for keybindings.
@@ -37,10 +40,23 @@ if [ ! -x bin/ploi-tui ]; then
   fi
 fi
 
-node mock/server.js &
+mock_log="$(mktemp)"
+node mock/server.js >"$mock_log" 2>&1 &
 mock_pid=$!
 work=""
-trap 'kill "$mock_pid" 2>/dev/null || true; [ -n "$work" ] && rm -rf "$work"' EXIT
+tui_pid=""
+
+cleanup() {
+  if [ -n "$tui_pid" ]; then
+    kill "$tui_pid" 2>/dev/null || true
+  fi
+  kill "$mock_pid" 2>/dev/null || true
+  if [ -n "$work" ]; then
+    rm -rf "$work"
+  fi
+  rm -f "$mock_log"
+}
+trap cleanup EXIT INT TERM
 
 # Wait until the mock accepts connections.
 for _ in $(seq 1 50); do
@@ -57,5 +73,9 @@ work="$(mktemp -d)"
 mkdir -p "$work/config/ploi-tui"
 printf 'api_token = "local-mock-token"\n' > "$work/config/ploi-tui/config.toml"
 
+echo "Mock API request log: $mock_log (removed when the TUI exits)"
+
 XDG_CONFIG_HOME="$work/config" XDG_CACHE_HOME="$work/cache" \
-  PLOI_TUI_API_URL="http://${HOST}:${PORT}" ./bin/ploi-tui
+  PLOI_TUI_API_URL="http://${HOST}:${PORT}" ./bin/ploi-tui &
+tui_pid=$!
+wait "$tui_pid"
