@@ -3,7 +3,7 @@
 
 // Temporary mock of the ploi.io API for promo screenshots.
 // No dependencies. Serves 100% fictional data on 127.0.0.1 only.
-// Run:  node mock/server.js
+// Run:  node mock/server.js            (or: ./mock/demo.sh)
 // Use:  XDG_CACHE_HOME="$(mktemp -d)" PLOI_TUI_API_URL=http://127.0.0.1:8787 ./bin/ploi-tui
 
 const http = require("http");
@@ -40,8 +40,17 @@ const round1 = (v) => Math.round(v * 10) / 10;
 const round2 = (v) => Math.round(v * 100) / 100;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+const gbSize = (n) => ({
+  bytes: Math.round(n * 1024 * 1024 * 1024),
+  human: `${n % 1 ? n.toFixed(1) : n} GB`,
+});
+const mbSize = (n) => ({
+  bytes: Math.round(n * 1024 * 1024),
+  human: `${Math.round(n)} MB`,
+});
+
 // ---------------------------------------------------------------------------
-// fixtures (all fictional; 203.0.113.x is reserved for documentation)
+// fixtures (all fictional; 203.0.113.x is reserved for documentation, RFC 5737)
 // ---------------------------------------------------------------------------
 
 const user = {
@@ -56,155 +65,454 @@ const user = {
   billing_details: {},
 };
 
-const servers = [
-  {
-    id: 101,
+const STATUS_IDS = { active: 1, building: 2, refreshing: 3, rebooting: 4, unreachable: 7 };
+
+const scripts = {
+  laravel: "git pull\ncomposer install --no-dev\nphp artisan migrate --force\nphp artisan config:cache",
+  php: "git pull\ncomposer install",
+  wordpress: "git pull",
+  static: "git pull\nnpm ci\nnpm run build",
+};
+
+const webDirs = { laravel: "/public", php: "/public", wordpress: "/", static: "/dist" };
+
+// Deterministic expiry mix (days): a few critical (<=7), some warning (<=30), mostly OK.
+const expiryBuckets = [3, 21, 45, 62, 62, 90, 90, 180, 180, 12];
+
+const servers = [];
+const sitesByServer = {};
+const databasesByServer = {};
+const systemUsersByServer = {};
+const certificatesBySite = {};
+
+let nextServerID = 100;
+let nextSiteID = 300;
+let nextDatabaseID = 10;
+let nextUserID = 4;
+let nextCertificateID = 40;
+
+function addServer(spec) {
+  const id = ++nextServerID;
+  const status = spec.status || "active";
+  const ip = `203.0.113.${10 + servers.length}`;
+  servers.push({
+    id,
     type: "server",
-    name: "northstar-production",
-    ip_address: "203.0.113.10",
-    php_version: 8.3,
-    mysql_version: 8.0,
-    sites_count: 3,
-    status: "active",
-    status_id: 1,
-    monitoring: true,
-    created_at: fmt(new Date("2024-03-14T09:12:00Z")),
-  },
-  {
-    id: 102,
-    type: "server",
-    name: "northstar-staging",
-    ip_address: "203.0.113.27",
-    php_version: 8.2,
-    mysql_version: 8.0,
-    sites_count: 2,
-    status: "active",
-    status_id: 1,
-    monitoring: true,
-    created_at: fmt(new Date("2024-05-21T15:47:00Z")),
-  },
-  {
-    id: 103,
-    type: "server",
-    name: "edge-worker-04",
-    ip_address: "203.0.113.42",
-    php_version: 8.1,
-    mysql_version: 0,
-    sites_count: 1,
-    status: "rebooting",
-    status_id: 4,
-    monitoring: false,
-    created_at: fmt(new Date("2025-01-08T08:05:00Z")),
-  },
-];
+    name: spec.name,
+    ip_address: ip,
+    php_version: spec.php,
+    mysql_version: spec.mysql || 0,
+    sites_count: spec.sites.length,
+    status,
+    status_id: STATUS_IDS[status] || 1,
+    monitoring: spec.monitoring !== false,
+    created_at: fmt(spec.created),
+  });
 
-const databases = {
-  101: [
-    { id: 11, type: "mysql", name: "app_example_prod", server_id: 101, status: "active", created_at: fmt(new Date("2024-03-15T10:02:00Z")) },
-    { id: 12, type: "mysql", name: "api_example_prod", server_id: 101, status: "active", created_at: fmt(new Date("2024-04-02T13:40:00Z")) },
-    { id: 13, type: "postgres", name: "dash_analytics", server_id: 101, status: "active", created_at: fmt(new Date("2024-06-19T09:15:00Z")) },
-  ],
-  102: [
-    { id: 21, type: "mysql", name: "app_example_staging", server_id: 102, status: "active", created_at: fmt(new Date("2024-05-22T11:30:00Z")) },
-  ],
-  103: [],
-};
+  const userNames = spec.users || ["ploi"];
+  systemUsersByServer[id] = userNames.map((name, i) => ({
+    id: ++nextUserID,
+    name,
+    root: `/home/${name}`,
+    created_at: fmt(new Date(spec.created.getTime() + (i + 1) * 60 * 1000)),
+  }));
 
-const systemUsers = {
-  101: [
-    { id: 5, name: "ploi", root: "/home/ploi", created_at: fmt(new Date("2024-03-14T09:13:00Z")) },
-    { id: 6, name: "deploy", root: "/home/deploy", created_at: fmt(new Date("2024-03-14T09:20:00Z")) },
-  ],
-  102: [
-    { id: 7, name: "ploi", root: "/home/ploi", created_at: fmt(new Date("2024-05-21T15:48:00Z")) },
-  ],
-  103: [
-    { id: 8, name: "ploi", root: "/home/ploi", created_at: fmt(new Date("2025-01-08T08:06:00Z")) },
-  ],
-};
+  const siteList = [];
+  spec.sites.forEach((s, i) => {
+    const siteID = ++nextSiteID;
+    const type = s.type || "php";
+    const owner = s.user || userNames[0];
+    siteList.push({
+      id: siteID,
+      status: s.status || "active",
+      server_id: id,
+      domain: s.domain,
+      deploy_script: s.script || scripts[type],
+      web_directory: s.web || webDirs[type],
+      project_type: type,
+      project_root: `/home/${owner}/${s.domain}`,
+      last_deploy_at: s.deployed === null ? null : fmt(s.deployed || hoursAgo(24 + i * 5)),
+      system_user: owner,
+      php_version: s.php || spec.php,
+      health_url: s.health || null,
+      has_repository: s.repo !== false,
+      quick_deploy: s.quick === true,
+      disk_usage: s.disk || mbSize(90 + ((siteID * 37) % 400)),
+      created_at: fmt(new Date(spec.created.getTime() + (i + 1) * 3600 * 1000)),
+    });
 
-const sites = {
-  101: [
-    {
-      id: 301, status: "active", server_id: 101, domain: "app.example.io",
-      deploy_script: "git pull\ncomposer install --no-dev\nphp artisan migrate --force",
-      web_directory: "/public", project_type: "laravel", project_root: "/home/deploy/app.example.io",
-      last_deploy_at: fmt(minutesAgo(42)), system_user: "deploy", php_version: 8.3,
-      health_url: "https://app.example.io/up", has_repository: true, quick_deploy: true,
-      disk_usage: { bytes: 2345678901, human: "2.2 GB" },
-      created_at: fmt(new Date("2024-03-15T10:00:00Z")),
-    },
-    {
-      id: 302, status: "active", server_id: 101, domain: "api.example.io",
-      deploy_script: "git pull\ncomposer install",
-      web_directory: "/public", project_type: "laravel", project_root: "/home/deploy/api.example.io",
-      last_deploy_at: fmt(hoursAgo(5)), system_user: "deploy", php_version: 8.3,
-      health_url: null, has_repository: true, quick_deploy: true,
-      disk_usage: { bytes: 812340000, human: "775 MB" },
-      created_at: fmt(new Date("2024-04-02T13:38:00Z")),
-    },
-    {
-      id: 303, status: "active", server_id: 101, domain: "dash.example.com",
-      deploy_script: "git pull\nnpm run build",
-      web_directory: "/dist", project_type: "php", project_root: "/home/ploi/dash.example.com",
-      last_deploy_at: fmt(hoursAgo(26)), system_user: "ploi", php_version: 8.3,
-      health_url: null, has_repository: true, quick_deploy: false,
-      disk_usage: { bytes: 419000000, human: "400 MB" },
-      created_at: fmt(new Date("2024-06-19T09:12:00Z")),
-    },
-  ],
-  102: [
-    {
-      id: 311, status: "active", server_id: 102, domain: "staging.example.io",
-      deploy_script: "git pull\ncomposer install",
-      web_directory: "/public", project_type: "laravel", project_root: "/home/ploi/staging.example.io",
-      last_deploy_at: fmt(hoursAgo(3)), system_user: "ploi", php_version: 8.2,
-      health_url: null, has_repository: true, quick_deploy: true,
-      disk_usage: { bytes: 1560000000, human: "1.5 GB" },
-      created_at: fmt(new Date("2024-05-22T11:28:00Z")),
-    },
-    {
-      id: 312, status: "deploying", server_id: 102, domain: "preview.example.dev",
-      deploy_script: "git pull",
-      web_directory: "/public", project_type: "php", project_root: "/home/ploi/preview.example.dev",
-      last_deploy_at: null, system_user: "ploi", php_version: 8.2,
-      health_url: null, has_repository: false, quick_deploy: false,
-      disk_usage: { bytes: 95000000, human: "91 MB" },
-      created_at: fmt(new Date("2025-02-11T16:05:00Z")),
-    },
-  ],
-  103: [
-    {
-      id: 321, status: "active", server_id: 103, domain: "status.example.net",
-      deploy_script: "git pull",
-      web_directory: "/public", project_type: "php", project_root: "/home/ploi/status.example.net",
-      last_deploy_at: fmt(hoursAgo(50)), system_user: "ploi", php_version: 8.1,
-      health_url: null, has_repository: true, quick_deploy: false,
-      disk_usage: { bytes: 52000000, human: "50 MB" },
-      created_at: fmt(new Date("2025-01-08T08:30:00Z")),
-    },
-  ],
-};
+    const expiresInDays = expiryBuckets[siteID % expiryBuckets.length];
+    const certCreated = new Date(
+      Math.max(spec.created.getTime(), daysAhead(expiresInDays - 95).getTime())
+    );
+    const certs = [
+      {
+        id: ++nextCertificateID,
+        status: "active",
+        domain: s.domain,
+        type: siteID % 9 === 4 ? "custom" : "letsencrypt",
+        active: true,
+        site_id: siteID,
+        server_id: id,
+        expires_at: fmt(daysAhead(expiresInDays)),
+        created_at: fmt(certCreated),
+      },
+    ];
+    if (s.www) {
+      certs.push({
+        id: ++nextCertificateID,
+        status: "active",
+        domain: s.www,
+        type: "letsencrypt",
+        active: true,
+        site_id: siteID,
+        server_id: id,
+        expires_at: fmt(daysAhead(expiresInDays)),
+        created_at: fmt(certCreated),
+      });
+    }
+    certificatesBySite[`${id}-${siteID}`] = certs;
+  });
+  sitesByServer[id] = siteList;
 
-const certificates = {
-  "101-301": [
-    { id: 41, status: "active", domain: "app.example.io", type: "letsencrypt", active: true, site_id: 301, server_id: 101, expires_at: fmt(daysAhead(62)), created_at: fmt(new Date("2024-03-15T10:05:00Z")) },
-    { id: 42, status: "active", domain: "www.app.example.io", type: "letsencrypt", active: true, site_id: 301, server_id: 101, expires_at: fmt(daysAhead(62)), created_at: fmt(new Date("2024-03-15T10:06:00Z")) },
+  let dbs = spec.databases;
+  if (!dbs && (spec.mysql || 0) > 0) {
+    dbs = siteList
+      .filter((s) => s.project_type !== "static")
+      .map((s) => `${s.domain.replace(/\./g, "_")}:mysql`);
+  }
+  databasesByServer[id] = (dbs || []).map((entry, i) => {
+    const [name, type] = entry.split(":");
+    return {
+      id: ++nextDatabaseID,
+      type: type || "mysql",
+      name,
+      server_id: id,
+      status: "active",
+      created_at: fmt(new Date(spec.created.getTime() + (i + 2) * 600 * 1000)),
+    };
+  });
+}
+
+// -- northstar (flagship Laravel apps + an edge worker) ----------------------
+
+addServer({
+  name: "northstar-production", php: 8.3, mysql: 8.0,
+  created: new Date("2024-03-14T09:12:00Z"), users: ["ploi", "deploy"],
+  sites: [
+    { domain: "app.example.io", type: "laravel", quick: true, user: "deploy",
+      health: "https://app.example.io/up", deployed: minutesAgo(42), disk: gbSize(2.2), www: "www.app.example.io" },
+    { domain: "api.example.io", type: "laravel", quick: true, user: "deploy",
+      deployed: hoursAgo(5), disk: mbSize(775) },
+    { domain: "dash.example.com", type: "php", web: "/dist",
+      deployed: hoursAgo(26), disk: mbSize(400) },
   ],
-  "101-302": [
-    { id: 43, status: "active", domain: "api.example.io", type: "letsencrypt", active: true, site_id: 302, server_id: 101, expires_at: fmt(daysAhead(21)), created_at: fmt(new Date("2024-04-02T13:41:00Z")) },
+});
+
+addServer({
+  name: "northstar-staging", php: 8.2, mysql: 8.0,
+  created: new Date("2024-05-21T15:47:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "staging.example.io", type: "laravel", quick: true,
+      deployed: hoursAgo(3), disk: gbSize(1.5) },
+    { domain: "preview.example.dev", type: "php", status: "deploying",
+      deployed: null, repo: false, disk: mbSize(91) },
   ],
-  "101-303": [
-    { id: 44, status: "active", domain: "dash.example.com", type: "custom", active: true, site_id: 303, server_id: 101, expires_at: fmt(daysAhead(180)), created_at: fmt(new Date("2024-06-19T09:18:00Z")) },
+});
+
+addServer({
+  name: "edge-worker-04", php: 8.1, status: "rebooting", monitoring: false,
+  created: new Date("2025-01-08T08:05:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "status.example.net", type: "php", deployed: hoursAgo(50), disk: mbSize(50) },
   ],
-  "102-311": [
-    { id: 45, status: "active", domain: "staging.example.io", type: "letsencrypt", active: true, site_id: 311, server_id: 102, expires_at: fmt(daysAhead(5)), created_at: fmt(new Date("2024-05-22T11:32:00Z")) },
+});
+
+// -- atlas (load-balanced API cluster) ---------------------------------------
+
+addServer({
+  name: "atlas-api-prod-01", php: 8.3, mysql: 8.0,
+  created: new Date("2024-04-03T11:30:00Z"), users: ["ploi", "deploy"],
+  sites: [
+    { domain: "api.atlas.example.io", type: "laravel", quick: true, user: "deploy",
+      health: "https://api.atlas.example.io/health", deployed: minutesAgo(17), disk: gbSize(1.9) },
+    { domain: "api-v2.atlas.example.io", type: "laravel", quick: true, user: "deploy",
+      deployed: hoursAgo(9), disk: gbSize(1.1) },
   ],
-  "102-312": [],
-  "103-321": [
-    { id: 46, status: "active", domain: "status.example.net", type: "letsencrypt", active: true, site_id: 321, server_id: 103, expires_at: fmt(daysAhead(90)), created_at: fmt(new Date("2025-01-08T08:32:00Z")) },
+});
+
+addServer({
+  name: "atlas-api-prod-02", php: 8.3, mysql: 8.0,
+  created: new Date("2024-04-03T11:45:00Z"), users: ["ploi", "deploy"],
+  sites: [
+    { domain: "api.atlas.example.io", type: "laravel", quick: true, user: "deploy",
+      health: "https://api.atlas.example.io/health", deployed: minutesAgo(17), disk: gbSize(1.8) },
+    { domain: "legacy-v1.atlas.example.io", type: "php", php: 8.1, user: "deploy",
+      deployed: hoursAgo(310), disk: mbSize(340) },
   ],
-};
+});
+
+addServer({
+  name: "atlas-api-staging", php: 8.4, mysql: 8.0,
+  created: new Date("2024-06-11T14:20:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "staging.api.atlas.example.io", type: "laravel",
+      deployed: hoursAgo(4), disk: gbSize(0.9) },
+    { domain: "demo.api.atlas.example.io", type: "laravel",
+      deployed: hoursAgo(52), disk: mbSize(210) },
+  ],
+});
+
+addServer({
+  name: "atlas-docs", php: 8.2, monitoring: false,
+  created: new Date("2024-09-19T09:05:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "docs.atlas.example.io", type: "static",
+      deployed: hoursAgo(96), disk: mbSize(45) },
+  ],
+});
+
+// -- horizon (web frontends) --------------------------------------------------
+
+addServer({
+  name: "horizon-web-prod-01", php: 8.3, mysql: 8.0,
+  created: new Date("2024-05-02T08:10:00Z"), users: ["ploi", "deploy"],
+  sites: [
+    { domain: "horizon.example.io", type: "laravel", quick: true, user: "deploy",
+      health: "https://horizon.example.io/up", deployed: minutesAgo(88), disk: gbSize(3.1) },
+    { domain: "www.horizon.example.io", type: "php", user: "deploy",
+      deployed: minutesAgo(88), disk: mbSize(4) },
+    { domain: "assets.horizon.example.io", type: "static",
+      deployed: hoursAgo(140), disk: mbSize(780) },
+  ],
+});
+
+addServer({
+  name: "horizon-web-prod-02", php: 8.3, mysql: 8.0,
+  created: new Date("2024-05-02T08:25:00Z"), users: ["ploi", "deploy"],
+  sites: [
+    { domain: "horizon.example.io", type: "laravel", quick: true, user: "deploy",
+      health: "https://horizon.example.io/up", deployed: hoursAgo(1), disk: gbSize(3.0) },
+    { domain: "www.horizon.example.io", type: "php", user: "deploy",
+      deployed: hoursAgo(1), disk: mbSize(4) },
+    { domain: "assets.horizon.example.io", type: "static",
+      deployed: hoursAgo(140), disk: mbSize(774) },
+  ],
+});
+
+addServer({
+  name: "horizon-web-staging", php: 8.2, mysql: 8.0, monitoring: false,
+  created: new Date("2024-07-30T16:40:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "staging.horizon.example.io", type: "laravel",
+      deployed: hoursAgo(9), disk: gbSize(1.2) },
+  ],
+});
+
+// -- lumen (queue workers) -----------------------------------------------------
+
+addServer({
+  name: "lumen-worker-01", php: 8.3,
+  created: new Date("2024-08-14T10:00:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "workers.lumen.example.io", type: "php",
+      deployed: hoursAgo(11), disk: mbSize(38) },
+  ],
+});
+
+addServer({
+  name: "lumen-worker-02", php: 8.3,
+  created: new Date("2024-08-14T10:15:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "workers.lumen.example.io", type: "php",
+      deployed: hoursAgo(11), disk: mbSize(41) },
+  ],
+});
+
+addServer({
+  name: "lumen-worker-03", php: 8.2,
+  created: new Date("2024-10-02T13:55:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "jobs.lumen.example.io", type: "php",
+      deployed: hoursAgo(63), disk: mbSize(55) },
+  ],
+});
+
+addServer({
+  name: "lumen-worker-04", php: 8.3,
+  created: new Date("2025-02-20T09:35:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "workers.lumen.example.io", type: "php",
+      deployed: hoursAgo(6), disk: mbSize(36) },
+  ],
+});
+
+// -- beacon (database nodes) ---------------------------------------------------
+
+addServer({
+  name: "beacon-db-prod-01", php: 8.2, mysql: 8.0,
+  created: new Date("2024-04-20T07:50:00Z"), users: ["ploi"],
+  databases: ["beacon_primary:mysql", "beacon_reporting:mysql", "beacon_archive:mysql"],
+  sites: [
+    { domain: "pma.beacon.example.io", type: "php",
+      deployed: hoursAgo(240), disk: mbSize(30) },
+  ],
+});
+
+addServer({
+  name: "beacon-db-prod-02", php: 8.2, mysql: 8.4,
+  created: new Date("2024-04-20T08:05:00Z"), users: ["ploi"],
+  databases: ["beacon_primary:mysql", "beacon_reporting:mysql"],
+  sites: [
+    { domain: "pma.beacon.example.io", type: "php",
+      deployed: hoursAgo(240), disk: mbSize(30) },
+  ],
+});
+
+// -- relay (edge/CDN) ----------------------------------------------------------
+
+addServer({
+  name: "relay-edge-01", php: 8.3, status: "building", monitoring: false,
+  created: new Date("2025-08-28T12:00:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "cdn.relay.example.net", type: "static", status: "repository-installing",
+      deployed: null, disk: mbSize(2) },
+  ],
+});
+
+addServer({
+  name: "relay-edge-02", php: 8.3, monitoring: false,
+  created: new Date("2024-11-05T15:20:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "cdn.relay.example.net", type: "static",
+      deployed: hoursAgo(47), disk: mbSize(410) },
+  ],
+});
+
+addServer({
+  name: "relay-edge-03", php: 8.3, monitoring: false,
+  created: new Date("2024-11-05T15:35:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "relay-status.example.net", type: "static",
+      deployed: hoursAgo(120), disk: mbSize(12) },
+  ],
+});
+
+addServer({
+  name: "relay-edge-04", php: 8.3, monitoring: false,
+  created: new Date("2025-03-12T10:45:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "cdn.relay.example.net", type: "static",
+      deployed: hoursAgo(47), disk: mbSize(405) },
+  ],
+});
+
+// -- quest (WordPress shops) ---------------------------------------------------
+
+addServer({
+  name: "quest-store-prod", php: 8.2, mysql: 8.0,
+  created: new Date("2024-02-27T09:40:00Z"), users: ["ploi", "deploy"],
+  sites: [
+    { domain: "shop.quest.example.com", type: "wordpress", quick: true, user: "deploy",
+      deployed: hoursAgo(2), disk: gbSize(4.6) },
+    { domain: "checkout.quest.example.com", type: "wordpress", quick: true, user: "deploy",
+      deployed: hoursAgo(2), disk: gbSize(2.8) },
+  ],
+});
+
+addServer({
+  name: "quest-store-staging", php: 8.1, mysql: 8.0, monitoring: false,
+  created: new Date("2024-08-08T11:25:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "staging.shop.quest.example.com", type: "wordpress",
+      deployed: hoursAgo(81), disk: gbSize(1.9) },
+  ],
+});
+
+addServer({
+  name: "quest-blog", php: 8.2, mysql: 8.0,
+  created: new Date("2023-12-12T14:10:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "blog.quest.example.com", type: "wordpress", quick: true,
+      deployed: hoursAgo(31), disk: gbSize(6.2) },
+  ],
+});
+
+// -- compass (internal tools) ---------------------------------------------------
+
+addServer({
+  name: "compass-admin", php: 8.3, mysql: 8.0,
+  created: new Date("2024-06-25T10:15:00Z"), users: ["ploi", "deploy"],
+  sites: [
+    { domain: "admin.compass.example.io", type: "laravel", quick: true,
+      health: "https://admin.compass.example.io/health", deployed: hoursAgo(6), disk: gbSize(0.8) },
+    { domain: "tracker.compass.example.io", type: "laravel",
+      deployed: hoursAgo(28), disk: gbSize(1.4) },
+    { domain: "wiki.compass.example.io", type: "php",
+      deployed: hoursAgo(210), disk: mbSize(320) },
+  ],
+});
+
+// -- one-offs -------------------------------------------------------------------
+
+addServer({
+  name: "sentinel-monitoring", php: 8.3,
+  created: new Date("2024-09-30T08:30:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "uptime.sentinel.example.io", type: "php",
+      health: "https://uptime.sentinel.example.io", deployed: hoursAgo(14), disk: mbSize(95) },
+  ],
+});
+
+addServer({
+  name: "aurora-analytics", php: 8.3, mysql: 8.0,
+  created: new Date("2024-10-16T13:05:00Z"), users: ["ploi", "deploy"],
+  databases: ["events:postgres", "metrics:postgres", "aurora_warehouse:postgres"],
+  sites: [
+    { domain: "dash.aurora.example.io", type: "laravel", quick: true,
+      deployed: hoursAgo(5), disk: gbSize(1.6) },
+    { domain: "ingest.aurora.example.io", type: "php",
+      deployed: hoursAgo(8), disk: mbSize(140) },
+  ],
+});
+
+addServer({
+  name: "ember-cron", php: 8.2,
+  created: new Date("2025-01-22T09:20:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "cron.ember.example.io", type: "php",
+      deployed: hoursAgo(44), disk: mbSize(28) },
+  ],
+});
+
+addServer({
+  name: "kestrel-mail", php: 8.2, status: "refreshing",
+  created: new Date("2024-05-09T07:35:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "mail.kestrel.example.io", type: "php",
+      deployed: hoursAgo(510), disk: mbSize(64) },
+  ],
+});
+
+addServer({
+  name: "harbor-backup", php: 8.1, mysql: 8.0, status: "unreachable",
+  created: new Date("2023-11-30T10:50:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "backup.harbor.example.io", type: "php",
+      deployed: hoursAgo(320), disk: gbSize(1.2) },
+  ],
+});
+
+addServer({
+  name: "meridian-sandbox", php: 8.4, monitoring: false,
+  created: new Date("2025-09-01T14:30:00Z"), users: ["ploi"],
+  sites: [
+    { domain: "lab.meridian.example.dev", type: "php",
+      deployed: hoursAgo(1), disk: mbSize(22) },
+    { domain: "spike.meridian.example.dev", type: "php", status: "deploy-failed",
+      deployed: null, disk: mbSize(5) },
+  ],
+});
 
 // 24h of samples, every 15 minutes; deterministic waveforms per server.
 function monitoringSeries(server) {
@@ -237,7 +545,7 @@ const notFound = (what) => ({ status: 404, body: { message: `${what} not found.`
 const ok = (body) => ({ status: 200, body });
 
 const findServer = (id) => servers.find((s) => s.id === Number(id));
-const findSite = (serverID, siteID) => (sites[Number(serverID)] || []).find((s) => s.id === Number(siteID));
+const findSite = (serverID, siteID) => (sitesByServer[Number(serverID)] || []).find((s) => s.id === Number(siteID));
 
 const routes = [
   ["GET", /^\/api\/user$/, () => ok(single(user))],
@@ -265,19 +573,19 @@ const routes = [
   ["GET", /^\/api\/servers\/(\d+)\/databases$/, (m) => {
     const server = findServer(m[1]);
     if (!server) return notFound("Server");
-    return ok(list(databases[server.id] || []));
+    return ok(list(databasesByServer[server.id] || []));
   }],
 
   ["GET", /^\/api\/servers\/(\d+)\/system-users$/, (m) => {
     const server = findServer(m[1]);
     if (!server) return notFound("Server");
-    return ok(list(systemUsers[server.id] || []));
+    return ok(list(systemUsersByServer[server.id] || []));
   }],
 
   ["GET", /^\/api\/servers\/(\d+)\/sites$/, (m) => {
     const server = findServer(m[1]);
     if (!server) return notFound("Server");
-    return ok(list(sites[server.id] || []));
+    return ok(list(sitesByServer[server.id] || []));
   }],
 
   ["GET", /^\/api\/servers\/(\d+)\/sites\/(\d+)$/, (m) => {
@@ -289,7 +597,7 @@ const routes = [
   ["GET", /^\/api\/servers\/(\d+)\/sites\/(\d+)\/certificates$/, (m) => {
     if (!findServer(m[1])) return notFound("Server");
     if (!findSite(m[1], m[2])) return notFound("Site");
-    return ok(list(certificates[`${Number(m[1])}-${Number(m[2])}`] || []));
+    return ok(list(certificatesBySite[`${Number(m[1])}-${Number(m[2])}`] || []));
   }],
 ];
 
@@ -324,7 +632,10 @@ const httpServer = http.createServer((req, res) => {
 });
 
 httpServer.listen(PORT, HOST, () => {
+  const siteTotal = Object.values(sitesByServer).reduce((n, s) => n + s.length, 0);
   console.log(`ploi-tui mock API listening on http://${HOST}:${PORT}`);
-  console.log("All data is fictional. Start the TUI with:");
+  console.log(`Serving ${servers.length} fictional servers / ${siteTotal} sites. All data is fake.`);
+  console.log("Start the TUI with:");
   console.log(`  XDG_CACHE_HOME="$(mktemp -d)" PLOI_TUI_API_URL=http://${HOST}:${PORT} ./bin/ploi-tui`);
+  console.log("Or simply: ./mock/demo.sh");
 });
