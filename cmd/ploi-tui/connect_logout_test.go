@@ -119,6 +119,50 @@ func TestConnectFlowStoresTokenAndShowsAccount(t *testing.T) {
 	}
 }
 
+func TestStripBracketedPaste(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain token", "secret-token", "secret-token"},
+		{"full markers", "\x1b[200~secret-token\x1b[201~", "secret-token"},
+		{"start marker only", "\x1b[200~secret-token", "secret-token"},
+		{"end marker only", "secret-token\x1b[201~", "secret-token"},
+		{"repeated markers", "\x1b[200~\x1b[200~secret\x1b[201~\x1b[201~", "secret"},
+		{"empty", "", ""},
+		{"markers only", "\x1b[200~\x1b[201~", ""},
+	}
+	for _, tt := range tests {
+		if got := stripBracketedPaste(tt.in); got != tt.want {
+			t.Errorf("%s: stripBracketedPaste(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestConnectFlowStripsBracketedPaste(t *testing.T) {
+	store := testEnv(t)
+
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if _, err := fmt.Fprint(w, `{"data":{"email":"paste@example.com","plan":"Pro"}}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("PLOI_TUI_API_URL", srv.URL)
+
+	var out bytes.Buffer
+	err := runConnectFlow(t.Context(), strings.NewReader("\x1b[200~ pasted-token \x1b[201~\n"), &out, store)
+	if err != nil {
+		t.Fatalf("runConnectFlow: %v", err)
+	}
+	if gotAuth != "Bearer pasted-token" {
+		t.Errorf("auth header = %q, want %q", gotAuth, "Bearer pasted-token")
+	}
+}
+
 func TestConnectFlowInvalidToken(t *testing.T) {
 	store := testEnv(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -50,7 +50,7 @@ func runConnectFlow(ctx context.Context, in io.Reader, out io.Writer, store *con
 	if err != nil {
 		return fmt.Errorf("read token: %w", err)
 	}
-	token = strings.TrimSpace(token)
+	token = strings.TrimSpace(stripBracketedPaste(token))
 	if token == "" {
 		return errors.New("no token entered; get one at " + apiKeyURL)
 	}
@@ -89,11 +89,17 @@ func runConnectFlow(ctx context.Context, in io.Reader, out io.Writer, store *con
 
 func readToken(in io.Reader, out io.Writer) (string, error) {
 	if f, ok := in.(*os.File); ok && isTerminal(f) {
+		if _, err := fmt.Fprint(out, "\x1b[?2004l"); err != nil {
+			return "", err
+		}
 		if _, err := fmt.Fprint(out, "API token › "); err != nil {
 			return "", err
 		}
 		b, err := term.ReadPassword(int(f.Fd()))
 		if _, writeErr := fmt.Fprintln(out); writeErr != nil {
+			return "", writeErr
+		}
+		if _, writeErr := fmt.Fprint(out, "\x1b[?2004h"); writeErr != nil {
 			return "", writeErr
 		}
 		if err != nil {
@@ -106,6 +112,15 @@ func readToken(in io.Reader, out io.Writer) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+var bracketedPasteMarkers = []string{"\x1b[200~", "\x1b[201~"}
+
+func stripBracketedPaste(s string) string {
+	for _, marker := range bracketedPasteMarkers {
+		s = strings.ReplaceAll(s, marker, "")
+	}
+	return s
 }
 
 func isTerminal(f *os.File) bool {
