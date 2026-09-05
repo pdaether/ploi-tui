@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -137,6 +138,27 @@ func TestStripBracketedPaste(t *testing.T) {
 		if got := stripBracketedPaste(tt.in); got != tt.want {
 			t.Errorf("%s: stripBracketedPaste(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestTerminalPasswordReaderAcceptsLongPaste(t *testing.T) {
+	token := strings.Repeat("long-token-", 200)
+	in := strings.NewReader("\x1b[200~" + token + "\x1b[201~\r")
+	var out bytes.Buffer
+	ttyIO := struct {
+		io.Reader
+		io.Writer
+	}{in, &out}
+
+	got, err := readHiddenToken(ttyIO)
+	if err != nil {
+		t.Fatalf("ReadPassword: %v", err)
+	}
+	if got != token {
+		t.Fatalf("token length = %d, want %d", len(got), len(token))
+	}
+	if strings.Contains(out.String(), token) {
+		t.Fatal("token was echoed to the terminal")
 	}
 }
 

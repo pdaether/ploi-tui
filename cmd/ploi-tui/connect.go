@@ -88,30 +88,50 @@ func runConnectFlow(ctx context.Context, in io.Reader, out io.Writer, store *con
 }
 
 func readToken(in io.Reader, out io.Writer) (string, error) {
-	if f, ok := in.(*os.File); ok && isTerminal(f) {
-		if _, err := fmt.Fprint(out, "\x1b[?2004l"); err != nil {
-			return "", err
-		}
-		if _, err := fmt.Fprint(out, "API token › "); err != nil {
-			return "", err
-		}
-		b, err := term.ReadPassword(int(f.Fd()))
-		if _, writeErr := fmt.Fprintln(out); writeErr != nil {
-			return "", writeErr
-		}
-		if _, writeErr := fmt.Fprint(out, "\x1b[?2004h"); writeErr != nil {
-			return "", writeErr
-		}
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		return readTerminalToken(f, out)
 	}
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+func readTerminalToken(in *os.File, out io.Writer) (token string, err error) {
+	fd := int(in.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if restoreErr := term.Restore(fd, oldState); err == nil && restoreErr != nil {
+			err = restoreErr
+		}
+	}()
+
+	if _, err = fmt.Fprint(out, "\x1b[?2004h"); err != nil {
+		return "", err
+	}
+	defer func() {
+		if _, writeErr := fmt.Fprint(out, "\x1b[?2004l"); err == nil && writeErr != nil {
+			err = writeErr
+		}
+	}()
+
+	return readHiddenToken(struct {
+		io.Reader
+		io.Writer
+	}{in, out})
+}
+
+func readHiddenToken(ttyIO io.ReadWriter) (token string, err error) {
+	tty := term.NewTerminal(ttyIO, "")
+	token, err = tty.ReadPassword("API token › ")
+	if errors.Is(err, term.ErrPasteIndicator) {
+		err = nil
+	}
+	return token, err
 }
 
 var bracketedPasteMarkers = []string{"\x1b[200~", "\x1b[201~"}
@@ -121,12 +141,4 @@ func stripBracketedPaste(s string) string {
 		s = strings.ReplaceAll(s, marker, "")
 	}
 	return s
-}
-
-func isTerminal(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
 }
