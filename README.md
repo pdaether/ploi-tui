@@ -4,6 +4,32 @@ A lazygit-style terminal UI for managing [ploi.io](https://ploi.io) servers — 
 
 Built with Go and the [Charm](https://github.com/charmbracelet/bubbletea) stack (Bubble Tea + Lip Gloss + Bubbles). Ships as a single static binary for **Linux and macOS** on **amd64 and arm64**.
 
+## Screenshots
+
+### Server list
+
+Browse all servers with status badges, site counts and runtimes at a glance.
+
+![Server list](img/serverlist.png)
+
+### Server overview
+
+Quick CPU/RAM/disk stats plus SSH, restart and copy-IP actions.
+
+![Server overview](img/server_details.png)
+
+### Monitoring
+
+CPU, memory, load and disk charts for the last 24 hours, refreshing every 60s.
+
+![Monitoring](img/monitoring.png)
+
+### Site details
+
+Per-site info with deployment status and certificate expiry.
+
+![Site details](img/site_details.png)
+
 ---
 
 ## Features
